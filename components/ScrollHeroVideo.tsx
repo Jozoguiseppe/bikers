@@ -10,6 +10,8 @@ const LERP = 0.18;
 const SNAP_THRESHOLD = 0.45;
 /** Scroll progress (0–1) where headline / copy start to appear */
 const TEXT_START = 0.76;
+/** Nudge past possible all-black encoder lead-in when scroll is at top */
+const FIRST_FRAME_MIN_T = 0.08;
 
 function subscribeReducedMotion(cb: () => void) {
   const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -107,7 +109,8 @@ export function ScrollHeroVideo() {
         video.currentTime = 0;
         videoPrimedRef.current = true;
       } catch {
-        /* ignore */
+        /* Autoplay / decode policies (esp. mobile): still allow scroll scrub */
+        videoPrimedRef.current = true;
       }
     };
 
@@ -117,13 +120,17 @@ export function ScrollHeroVideo() {
     };
 
     video.addEventListener("loadedmetadata", syncDuration);
+    video.addEventListener("durationchange", syncDuration);
     video.addEventListener("loadeddata", onLoadedData);
     video.addEventListener("canplay", syncDuration);
+    video.addEventListener("canplaythrough", onLoadedData);
 
     return () => {
       video.removeEventListener("loadedmetadata", syncDuration);
+      video.removeEventListener("durationchange", syncDuration);
       video.removeEventListener("loadeddata", onLoadedData);
       video.removeEventListener("canplay", syncDuration);
+      video.removeEventListener("canplaythrough", onLoadedData);
     };
   }, [prefersReducedMotion]);
 
@@ -161,22 +168,23 @@ export function ScrollHeroVideo() {
       applyOverlayStyles(p);
 
       const dur = durationRef.current;
-      const canSeek =
-        Number.isFinite(dur) &&
-        dur > 0 &&
-        (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
-          videoPrimedRef.current);
-
-      if (canSeek) {
-        const target = p * dur;
+      if (Number.isFinite(dur) && dur > 0) {
+        let target = p * dur;
+        if (p < 0.002 && dur > FIRST_FRAME_MIN_T * 2) {
+          target = Math.min(FIRST_FRAME_MIN_T, dur * 0.04);
+        }
         const cur = video.currentTime;
         if (!Number.isNaN(cur)) {
-          if (Math.abs(target - cur) > SNAP_THRESHOLD) {
-            video.currentTime = target;
-          } else if (Math.abs(target - cur) > 0.03) {
-            video.currentTime = cur + (target - cur) * LERP;
-          } else {
-            video.currentTime = target;
+          try {
+            if (Math.abs(target - cur) > SNAP_THRESHOLD) {
+              video.currentTime = target;
+            } else if (Math.abs(target - cur) > 0.03) {
+              video.currentTime = cur + (target - cur) * LERP;
+            } else {
+              video.currentTime = target;
+            }
+          } catch {
+            /* seek before buffer ready — next frames will retry */
           }
         }
       }
@@ -192,6 +200,7 @@ export function ScrollHeroVideo() {
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("wheel", unlockOnScroll, { passive: true });
     window.addEventListener("touchstart", unlockOnScroll, { passive: true });
+    window.addEventListener("pointerdown", unlockOnScroll, { passive: true });
     window.addEventListener("resize", onScroll, { passive: true });
     updateScrollProgress();
     applyOverlayStyles(scrollProgressRef.current);
@@ -201,6 +210,7 @@ export function ScrollHeroVideo() {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("wheel", unlockOnScroll);
       window.removeEventListener("touchstart", unlockOnScroll);
+      window.removeEventListener("pointerdown", unlockOnScroll);
       window.removeEventListener("resize", onScroll);
       cancelAnimationFrame(rafRef.current);
     };
@@ -233,6 +243,7 @@ export function ScrollHeroVideo() {
             ref={videoRef}
             className="absolute inset-0 h-full w-full object-contain"
             src="/media/hero.mp4"
+            poster="/content/gallery/20210912_185902.jpg"
             muted
             playsInline
             preload="auto"
