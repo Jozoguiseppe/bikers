@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 /** Pinned hero band height (16:9 video sits inside this, shorter than full viewport) */
 const HERO_BAND_DVH = 72;
@@ -32,6 +38,16 @@ function smoothstep01(t: number) {
   return x * x * (3 - 2 * x);
 }
 
+/** Safari (incl. iOS) often won't repaint paused video after currentTime seeks without a play/pause nudge */
+function isSafariHTMLVideoSeekQuirk() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg/i.test(ua);
+}
+
+/** Not used in homepage grid — avoids "hero = first gallery tile" confusion */
+const HERO_POSTER_SRC = "/content/gallery/20210707_204711.jpg";
+
 export function ScrollHeroVideo() {
   const prefersReducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
@@ -39,12 +55,16 @@ export function ScrollHeroVideo() {
     getServerSnapshot
   );
 
+  const [posterSrc, setPosterSrc] = useState<string | undefined>(HERO_POSTER_SRC);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const durationRef = useRef(0);
   const scrollProgressRef = useRef(0);
   const rafRef = useRef(0);
   const videoPrimedRef = useRef(false);
+  const lastSafariSeekNudgeRef = useRef(0);
+  const safariNudgeBusyRef = useRef(false);
 
   const scrimRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -134,6 +154,24 @@ export function ScrollHeroVideo() {
     };
   }, [prefersReducedMotion]);
 
+  /** Drop poster once the video has committed a seek so it can't mask scrubbed frames (esp. iOS) */
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || prefersReducedMotion) return;
+    let done = false;
+    const clearPoster = () => {
+      if (done) return;
+      done = true;
+      setPosterSrc(undefined);
+    };
+    video.addEventListener("seeked", clearPoster);
+    const t = window.setTimeout(clearPoster, 2800);
+    return () => {
+      video.removeEventListener("seeked", clearPoster);
+      window.clearTimeout(t);
+    };
+  }, [prefersReducedMotion]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -182,6 +220,28 @@ export function ScrollHeroVideo() {
               video.currentTime = cur + (target - cur) * LERP;
             } else {
               video.currentTime = target;
+            }
+
+            /* Safari: repaint video after programmatic seek while paused */
+            if (
+              isSafariHTMLVideoSeekQuirk() &&
+              Math.abs(target - cur) > 0.01 &&
+              !safariNudgeBusyRef.current
+            ) {
+              const now = performance.now();
+              if (now - lastSafariSeekNudgeRef.current > 120) {
+                lastSafariSeekNudgeRef.current = now;
+                safariNudgeBusyRef.current = true;
+                void video
+                  .play()
+                  .then(() => {
+                    video.pause();
+                  })
+                  .catch(() => {})
+                  .finally(() => {
+                    safariNudgeBusyRef.current = false;
+                  });
+              }
             }
           } catch {
             /* seek before buffer ready — next frames will retry */
@@ -241,12 +301,13 @@ export function ScrollHeroVideo() {
         >
           <video
             ref={videoRef}
-            className="absolute inset-0 h-full w-full object-contain"
+            className="absolute inset-0 h-full w-full object-contain [-webkit-transform:translateZ(0)]"
             src="/media/hero.mp4"
-            poster="/content/gallery/20210912_185902.jpg"
+            poster={posterSrc}
             muted
             playsInline
             preload="auto"
+            disableRemotePlayback
             aria-hidden
           />
         </div>
@@ -277,6 +338,28 @@ export function ScrollHeroVideo() {
               enjoy the city.
             </p>
           </div>
+        </div>
+
+        {/* Scroll cue — bottom of first screen, brand orange */}
+        <div
+          className="pointer-events-none absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1 text-[#E67A2E] sm:bottom-6"
+          aria-hidden
+        >
+          <span className="font-bold text-[0.65rem] uppercase tracking-[0.45em] drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] sm:text-xs">
+            Scroll
+          </span>
+          <svg
+            className={`h-6 w-6 shrink-0 drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)] sm:h-7 sm:w-7 ${prefersReducedMotion ? "" : "hero-scroll-hint-arrow"}`}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.25}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 4v11" />
+            <path d="m6 12 6 6 6-6" />
+          </svg>
         </div>
       </div>
     </div>

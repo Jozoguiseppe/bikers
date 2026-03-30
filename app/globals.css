@@ -70,4 +70,24 @@ body {
   .rolling-reviews-row {
     animation: none;
   }
+
+  .hero-scroll-hint-arrow {
+    animation: none !important;
+  }
+}
+
+@keyframes hero-scroll-hint-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.95;
+  }
+  50% {
+    transform: translateY(8px);
+    opacity: 1;
+  }
+}
+
+.hero-scroll-hint-arrow {
+  animation: hero-scroll-hint-bounce 1.75s ease-in-out infinite;
 }
