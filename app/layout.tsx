@@ -12,10 +12,25 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const metaTitle =
+  "Bikers Cafe Dubrovnik | Best Biker Cafe & Motorcycle Stop in Dubrovnik";
+const metaDescription =
+  "Visit Bikers Cafe Dubrovnik, the best biker-friendly cafe in Dubrovnik. A premium motorcycle stop with great coffee, biker atmosphere, amazing bikes, and a legendary road vibe.";
+
 export const metadata: Metadata = {
-  title: "Bikers Cafe Dubrovnik | Best place for bikers in Dubrovnik",
-  description:
-    "Premium biker cafe in Dubrovnik—coffee, food, and atmosphere for riders and friends.",
+  title: metaTitle,
+  description: metaDescription,
+  openGraph: {
+    title: metaTitle,
+    description: metaDescription,
+    type: "website",
+    locale: "en",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: metaTitle,
+    description: metaDescription,
+  },
 };
 
 export default function RootLayout({
@@ -28,7 +43,7 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-[#0A0A0C] text-[#F5F5F5] antialiased">
+      <body className="min-h-full bg-[#0A0A0C] text-[#F5F5F5] antialiased">
         {children}
       </body>
     </html>

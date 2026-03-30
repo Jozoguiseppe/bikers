@@ -17,3 +17,57 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100px;
+  z-index: 100;
+  border-radius: 4px;
+  background-color: #e67a2e;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0a0a0c;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 1rem;
+  outline: 2px solid #f5f5f5;
+  outline-offset: 2px;
+}
+
+@keyframes rolling-reviews-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.rolling-reviews-row {
+  animation-name: rolling-reviews-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+}
+
+.rolling-reviews-row:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rolling-reviews-marquee {
+    display: none;
+  }
+
+  .rolling-reviews-fallback {
+    display: flex;
+  }
+
+  .rolling-reviews-row {
+    animation: none;
+  }
+}

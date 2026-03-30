@@ -2,8 +2,14 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
-const HERO_SCROLL_VH = 280;
-const LERP = 0.14;
+/** Pinned hero band height (16:9 video sits inside this, shorter than full viewport) */
+const HERO_BAND_DVH = 72;
+/** Outer scroll runway: smaller = less scrolling before the next section */
+const HERO_SCROLL_VH = 165;
+const LERP = 0.18;
+const SNAP_THRESHOLD = 0.45;
+/** Scroll progress (0–1) where headline / copy start to appear */
+const TEXT_START = 0.76;
 
 function subscribeReducedMotion(cb: () => void) {
   const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -19,6 +25,11 @@ function getServerSnapshot() {
   return false;
 }
 
+function smoothstep01(t: number) {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+}
+
 export function ScrollHeroVideo() {
   const prefersReducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
@@ -31,11 +42,10 @@ export function ScrollHeroVideo() {
   const durationRef = useRef(0);
   const scrollProgressRef = useRef(0);
   const rafRef = useRef(0);
+  const videoPrimedRef = useRef(false);
 
-  const eyebrowRef = useRef<HTMLParagraphElement>(null);
-  const headlineRef = useRef<HTMLHeadingElement>(null);
-  const subRef = useRef<HTMLParagraphElement>(null);
-  const hintRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
 
   const updateScrollProgress = useCallback(() => {
     const el = containerRef.current;
@@ -51,38 +61,71 @@ export function ScrollHeroVideo() {
 
   const applyOverlayStyles = useCallback(
     (p: number) => {
-      const headlineOpacity = Math.max(0.2, 1 - p * 0.55);
-      const subOpacity = Math.max(0.15, 1 - p * 0.65);
-      const hintOpacity = Math.max(0, 1 - p * 4);
+      if (prefersReducedMotion) {
+        if (scrimRef.current) {
+          scrimRef.current.style.opacity = "0.5";
+        }
+        if (textLayerRef.current) {
+          textLayerRef.current.style.opacity = "1";
+          textLayerRef.current.style.transform = "translate3d(0, 0, 0)";
+        }
+        return;
+      }
 
-      if (eyebrowRef.current) {
-        eyebrowRef.current.style.opacity = String(headlineOpacity);
+      const rawT =
+        p <= TEXT_START ? 0 : (p - TEXT_START) / (1 - TEXT_START);
+      const t = smoothstep01(rawT);
+
+      if (scrimRef.current) {
+        scrimRef.current.style.opacity = String(t * 0.75);
       }
-      if (headlineRef.current) {
-        headlineRef.current.style.opacity = String(headlineOpacity);
-        headlineRef.current.style.transform = `translate3d(0, ${p * -28}px, 0) scale(${1 - p * 0.04})`;
-      }
-      if (subRef.current) {
-        subRef.current.style.opacity = String(subOpacity);
-        subRef.current.style.transform = `translate3d(0, ${p * -18}px, 0)`;
-      }
-      if (hintRef.current) {
-        hintRef.current.style.opacity = String(hintOpacity);
+      if (textLayerRef.current) {
+        textLayerRef.current.style.opacity = String(t);
+        textLayerRef.current.style.transform = `translate3d(0, ${(1 - t) * 28}px, 0) scale(${0.9 + t * 0.1})`;
       }
     },
-    []
+    [prefersReducedMotion]
   );
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const onMeta = () => {
-      durationRef.current = video.duration || 0;
+    const syncDuration = () => {
+      const d = video.duration;
+      if (Number.isFinite(d) && d > 0) {
+        durationRef.current = d;
+      }
     };
-    video.addEventListener("loadedmetadata", onMeta);
-    return () => video.removeEventListener("loadedmetadata", onMeta);
-  }, []);
+
+    const primePlayback = async () => {
+      if (videoPrimedRef.current || prefersReducedMotion) return;
+      video.muted = true;
+      try {
+        await video.play();
+        video.pause();
+        video.currentTime = 0;
+        videoPrimedRef.current = true;
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const onLoadedData = () => {
+      syncDuration();
+      void primePlayback();
+    };
+
+    video.addEventListener("loadedmetadata", syncDuration);
+    video.addEventListener("loadeddata", onLoadedData);
+    video.addEventListener("canplay", syncDuration);
+
+    return () => {
+      video.removeEventListener("loadedmetadata", syncDuration);
+      video.removeEventListener("loadeddata", onLoadedData);
+      video.removeEventListener("canplay", syncDuration);
+    };
+  }, [prefersReducedMotion]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -96,8 +139,21 @@ export function ScrollHeroVideo() {
       return;
     }
 
+    video.muted = true;
     video.pause();
-    video.currentTime = 0;
+
+    const unlockOnScroll = () => {
+      if (videoPrimedRef.current) return;
+      void video
+        .play()
+        .then(() => {
+          video.pause();
+          video.currentTime =
+            scrollProgressRef.current * (durationRef.current || 0);
+          videoPrimedRef.current = true;
+        })
+        .catch(() => {});
+    };
 
     const tick = () => {
       updateScrollProgress();
@@ -105,22 +161,37 @@ export function ScrollHeroVideo() {
       applyOverlayStyles(p);
 
       const dur = durationRef.current;
-      if (dur > 0 && video.readyState >= 1) {
+      const canSeek =
+        Number.isFinite(dur) &&
+        dur > 0 &&
+        (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
+          videoPrimedRef.current);
+
+      if (canSeek) {
         const target = p * dur;
         const cur = video.currentTime;
-        const next = cur + (target - cur) * LERP;
-        if (Math.abs(target - cur) > 0.02) {
-          video.currentTime = Math.min(dur, Math.max(0, next));
-        } else {
-          video.currentTime = target;
+        if (!Number.isNaN(cur)) {
+          if (Math.abs(target - cur) > SNAP_THRESHOLD) {
+            video.currentTime = target;
+          } else if (Math.abs(target - cur) > 0.03) {
+            video.currentTime = cur + (target - cur) * LERP;
+          } else {
+            video.currentTime = target;
+          }
         }
       }
 
       rafRef.current = requestAnimationFrame(tick);
     };
 
-    const onScroll = () => updateScrollProgress();
+    const onScroll = () => {
+      unlockOnScroll();
+      updateScrollProgress();
+    };
+
     window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("wheel", unlockOnScroll, { passive: true });
+    window.addEventListener("touchstart", unlockOnScroll, { passive: true });
     window.addEventListener("resize", onScroll, { passive: true });
     updateScrollProgress();
     applyOverlayStyles(scrollProgressRef.current);
@@ -128,64 +199,72 @@ export function ScrollHeroVideo() {
 
     return () => {
       window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("wheel", unlockOnScroll);
+      window.removeEventListener("touchstart", unlockOnScroll);
       window.removeEventListener("resize", onScroll);
       cancelAnimationFrame(rafRef.current);
     };
   }, [prefersReducedMotion, updateScrollProgress, applyOverlayStyles]);
 
+  const heroHeight = prefersReducedMotion
+    ? `${HERO_BAND_DVH}dvh`
+    : `${HERO_SCROLL_VH}vh`;
+
   return (
     <div
       ref={containerRef}
-      className="relative w-full"
-      style={{
-        height: prefersReducedMotion ? "100vh" : `${HERO_SCROLL_VH}vh`,
-      }}
+      className="relative w-full shrink-0"
+      style={{ height: heroHeight, minHeight: heroHeight }}
+      suppressHydrationWarning
     >
-      <div className="sticky top-0 flex h-screen w-full items-stretch justify-center overflow-hidden bg-[#0A0A0C]">
-        <video
-          ref={videoRef}
-          className="absolute inset-0 h-full w-full object-cover"
-          src="/media/hero.mp4"
-          muted
-          playsInline
-          preload="auto"
+      <div
+        className="sticky top-0 flex w-full items-center justify-center overflow-hidden bg-[#0A0A0C]"
+        style={{ height: `${HERO_BAND_DVH}dvh`, minHeight: `${HERO_BAND_DVH}dvh` }}
+      >
+        {/* True 16:9 frame, full frame visible (letterboxing only inside this band if needed) */}
+        <div
+          className="relative mx-auto w-full max-w-none shrink-0 px-0"
+          style={{
+            aspectRatio: "16 / 9",
+            width: `min(100vw, calc(${HERO_BAND_DVH}dvh * 16 / 9))`,
+          }}
+        >
+          <video
+            ref={videoRef}
+            className="absolute inset-0 h-full w-full object-contain"
+            src="/media/hero.mp4"
+            muted
+            playsInline
+            preload="auto"
+            aria-hidden
+          />
+        </div>
+
+        {/* Darkening + headline only after scroll nears end */}
+        <div
+          ref={scrimRef}
+          className="pointer-events-none absolute inset-0 bg-[#0A0A0C]/80 opacity-0 transition-opacity duration-100"
           aria-hidden
         />
 
         <div
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#0A0A0C]/55 via-[#0A0A0C]/35 to-[#0A0A0C]/90"
-          aria-hidden
-        />
-
-        <div className="relative z-10 flex w-full max-w-5xl flex-col items-center justify-center px-6 text-center">
-          <p
-            ref={eyebrowRef}
-            className="mb-4 font-semibold uppercase tracking-[0.35em] text-[#E67A2E] text-sm"
-          >
-            Bikers Cafe Dubrovnik
-          </p>
-          <h1
-            ref={headlineRef}
-            className="text-balance font-black uppercase tracking-tight text-[#F5F5F5] text-4xl leading-none will-change-transform sm:text-6xl md:text-7xl"
-          >
-            Best place for bikers
-            <br />
-            <span className="text-[#E67A2E]">in Dubrovnik</span>
-          </h1>
-          <p
-            ref={subRef}
-            className="mt-6 max-w-xl text-pretty text-lg text-[#F5F5F5]/75 will-change-transform sm:text-xl"
-          >
-            Cinematic rides meet the Adriatic. Scroll to unfold the story—then
-            step inside.
-          </p>
-          <div
-            ref={hintRef}
-            className="pointer-events-none mt-14 flex flex-col items-center gap-2 text-[#F5F5F5]/45 text-xs uppercase tracking-widest"
-            aria-hidden
-          >
-            <span className="inline-block h-8 w-px bg-gradient-to-b from-[#E67A2E] to-transparent" />
-            Scroll
+          ref={textLayerRef}
+          className="pointer-events-none absolute inset-0 flex items-center justify-center px-6 text-center opacity-0"
+        >
+          <div>
+            <p className="mb-4 font-semibold uppercase tracking-[0.35em] text-[#E67A2E] text-sm drop-shadow-[0_2px_12px_rgba(0,0,0,0.9)]">
+              Bikers Cafe Dubrovnik
+            </p>
+            <h1 className="text-balance font-black uppercase tracking-tight text-[#F5F5F5] text-4xl leading-none drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] sm:text-6xl md:text-7xl">
+              Best place for bikers
+              <br />
+              <span className="text-[#E67A2E]">in Dubrovnik</span>
+            </h1>
+            <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg text-[#F5F5F5]/90 drop-shadow-[0_2px_16px_rgba(0,0,0,0.9)] sm:text-xl">
+              Bikers Cafe Dubrovnik is the ultimate rider stop for great coffee,
+              cold drinks, real road spirit, and the perfect place to park up and
+              enjoy the city.
+            </p>
           </div>
         </div>
       </div>
