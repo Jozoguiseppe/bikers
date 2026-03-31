@@ -39,8 +39,10 @@ export const site = {
     eyebrow: "About us",
     title: "Built for the road",
     body: [
-      "Bikers Cafe Dubrovnik is where the ride meets the Adriatic. We built a home for locals and travelers who live for the road, quality drinks and a space that respects the machine and the people around it.",
-      "Whether you rolled in on two wheels or you are here for the atmosphere, you get the same welcome: confident hospitality, mechanical precision in every detail, and a backdrop that feels like a premium garage with the Dubrovnik Old City and Adriatic Sea at arm’s length.",
+      "Since 2000., Bikers Cafe Dubrovnik has been a meeting point for riders, locals, and travelers who share the same passion for motorcycles, freedom, and authentic atmosphere.",
+      "Located in Dubrovnik, our cafe is more than just a place for coffee. It is a biker destination where the sound of engines, premium bikes, strong espresso, cold beer, and real stories from the road create an experience you remember.",
+      "Whether you ride a Harley, touring bike, sport bike, or simply love the biker lifestyle, this is the place where people come together before city rides, after coastal routes, and during unforgettable Dubrovnik sunsets.",
+      "From local bikers to international motorcycle travelers exploring the Adriatic coast, Bikers Cafe Dubrovnik is known as one of the most unique biker-friendly places in the city.",
     ],
     stats: [
       {

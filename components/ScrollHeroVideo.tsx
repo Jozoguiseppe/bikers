@@ -18,6 +18,11 @@ const SNAP_THRESHOLD = 0.45;
 const TEXT_START = 0.76;
 /** Nudge past possible all-black encoder lead-in when scroll is at top */
 const FIRST_FRAME_MIN_T = 0.08;
+/** Mobile: fewer, cleaner seeks are smoother than high-frequency tiny seeks */
+const MOBILE_SEEK_INTERVAL_MS = 34;
+const DESKTOP_SEEK_INTERVAL_MS = 16;
+const MOBILE_FRAME_QUANT = 1 / 45;
+const DESKTOP_FRAME_QUANT = 1 / 90;
 
 function subscribeReducedMotion(cb: () => void) {
   const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -45,6 +50,14 @@ function isSafariHTMLVideoSeekQuirk() {
   return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg/i.test(ua);
 }
 
+function isLikelyMobileDevice() {
+  if (typeof window === "undefined") return false;
+  return (
+    window.matchMedia("(max-width: 900px)").matches ||
+    window.matchMedia("(pointer: coarse)").matches
+  );
+}
+
 /** Not used in homepage grid — avoids "hero = first gallery tile" confusion */
 const HERO_POSTER_SRC = "/content/gallery/20210707_204711.jpg";
 
@@ -65,6 +78,8 @@ export function ScrollHeroVideo() {
   const videoPrimedRef = useRef(false);
   const lastSafariSeekNudgeRef = useRef(0);
   const safariNudgeBusyRef = useRef(false);
+  const lastSeekAtRef = useRef(0);
+  const lastAppliedTimeRef = useRef(0);
 
   const scrimRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -186,6 +201,13 @@ export function ScrollHeroVideo() {
 
     video.muted = true;
     video.pause();
+    const isMobile = isLikelyMobileDevice();
+    const seekIntervalMs = isMobile
+      ? MOBILE_SEEK_INTERVAL_MS
+      : DESKTOP_SEEK_INTERVAL_MS;
+    const frameQuant = isMobile ? MOBILE_FRAME_QUANT : DESKTOP_FRAME_QUANT;
+    const minDelta = isMobile ? 0.07 : 0.03;
+    const lerp = isMobile ? 0.24 : LERP;
 
     const unlockOnScroll = () => {
       if (videoPrimedRef.current) return;
@@ -201,6 +223,7 @@ export function ScrollHeroVideo() {
     };
 
     const tick = () => {
+      const now = performance.now();
       updateScrollProgress();
       const p = scrollProgressRef.current;
       applyOverlayStyles(p);
@@ -211,25 +234,40 @@ export function ScrollHeroVideo() {
         if (p < 0.002 && dur > FIRST_FRAME_MIN_T * 2) {
           target = Math.min(FIRST_FRAME_MIN_T, dur * 0.04);
         }
+        target = Math.round(target / frameQuant) * frameQuant;
         const cur = video.currentTime;
         if (!Number.isNaN(cur)) {
+          const delta = target - cur;
+          const sinceLastSeek = now - lastSeekAtRef.current;
+          if (
+            sinceLastSeek < seekIntervalMs &&
+            Math.abs(target - lastAppliedTimeRef.current) < minDelta * 2
+          ) {
+            rafRef.current = requestAnimationFrame(tick);
+            return;
+          }
           try {
-            if (Math.abs(target - cur) > SNAP_THRESHOLD) {
-              video.currentTime = target;
-            } else if (Math.abs(target - cur) > 0.03) {
-              video.currentTime = cur + (target - cur) * LERP;
+            if (Math.abs(delta) > SNAP_THRESHOLD) {
+              if ("fastSeek" in video && typeof video.fastSeek === "function") {
+                video.fastSeek(target);
+              } else {
+                video.currentTime = target;
+              }
+            } else if (Math.abs(delta) > minDelta) {
+              video.currentTime = cur + delta * lerp;
             } else {
               video.currentTime = target;
             }
+            lastSeekAtRef.current = now;
+            lastAppliedTimeRef.current = target;
 
             /* Safari: repaint video after programmatic seek while paused */
             if (
               isSafariHTMLVideoSeekQuirk() &&
-              Math.abs(target - cur) > 0.01 &&
+              Math.abs(delta) > minDelta &&
               !safariNudgeBusyRef.current
             ) {
-              const now = performance.now();
-              if (now - lastSafariSeekNudgeRef.current > 120) {
+              if (now - lastSafariSeekNudgeRef.current > 180) {
                 lastSafariSeekNudgeRef.current = now;
                 safariNudgeBusyRef.current = true;
                 void video
