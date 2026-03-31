@@ -58,8 +58,8 @@ function isLikelyMobileDevice() {
   );
 }
 
-/** Not used in homepage grid — avoids "hero = first gallery tile" confusion */
-const HERO_POSTER_SRC = "/content/gallery/20210707_204711.jpg";
+/** Poster extracted from hero.mp4 to avoid first-paint image swap on mobile */
+const HERO_POSTER_SRC = "/media/hero-poster.jpg";
 
 export function ScrollHeroVideo() {
   const prefersReducedMotion = useSyncExternalStore(
