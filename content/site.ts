@@ -57,6 +57,12 @@ export const site = {
         label: "Dubrovnik",
         value: "The ultimate biker stop in Dubrovnik.",
       },
+      {
+        label: "Traffic & parking",
+        value:
+          "Traffic regulation zone around Dubrovnik old town does not apply to motorcycles. Entry is free, as is parking for motorcycles throughout Dubrovnik",
+        wide: true,
+      },
     ],
   },
   gallery: {

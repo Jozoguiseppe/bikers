@@ -23,7 +23,9 @@ export function AboutSection() {
           {about.stats.map((s) => (
             <div
               key={s.label}
-              className="rounded-xl border border-white/[0.08] bg-[#12121A] px-5 py-6 shadow-[0_0_0_1px_rgba(230,122,46,0.08)]"
+              className={`rounded-xl border border-white/[0.08] bg-[#12121A] px-5 py-6 shadow-[0_0_0_1px_rgba(230,122,46,0.08)] ${
+                "wide" in s && s.wide ? "sm:col-span-3" : ""
+              }`}
             >
               <dt className="font-semibold uppercase tracking-wider text-[#E67A2E] text-xs">
                 {s.label}
