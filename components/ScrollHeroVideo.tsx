@@ -1,28 +1,17 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
-/** Pinned hero band height (16:9 video sits inside this, shorter than full viewport) */
+/** Pinned hero band height (16:9 sits inside this, shorter than full viewport) */
 const HERO_BAND_DVH = 72;
 /** Outer scroll runway: smaller = less scrolling before the next section */
 const HERO_SCROLL_VH = 165;
-const LERP = 0.18;
-const SNAP_THRESHOLD = 0.45;
 /** Scroll progress (0–1) where headline / copy start to appear */
 const TEXT_START = 0.76;
-/** Nudge past possible all-black encoder lead-in when scroll is at top */
-const FIRST_FRAME_MIN_T = 0.08;
-/** Mobile: fewer, cleaner seeks are smoother than high-frequency tiny seeks */
-const MOBILE_SEEK_INTERVAL_MS = 34;
-const DESKTOP_SEEK_INTERVAL_MS = 16;
-const MOBILE_FRAME_QUANT = 1 / 45;
-const DESKTOP_FRAME_QUANT = 1 / 90;
+
+const HERO_FRAME_COUNT = 20;
+const HERO_FRAME_SRC = (index: number) =>
+  `/media/hero-frames/frame-${String(index + 1).padStart(4, "0")}.webp`;
 
 function subscribeReducedMotion(cb: () => void) {
   const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -43,24 +32,6 @@ function smoothstep01(t: number) {
   return x * x * (3 - 2 * x);
 }
 
-/** Safari (incl. iOS) often won't repaint paused video after currentTime seeks without a play/pause nudge */
-function isSafariHTMLVideoSeekQuirk() {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg/i.test(ua);
-}
-
-function isLikelyMobileDevice() {
-  if (typeof window === "undefined") return false;
-  return (
-    window.matchMedia("(max-width: 900px)").matches ||
-    window.matchMedia("(pointer: coarse)").matches
-  );
-}
-
-/** Poster extracted from hero.mp4 to avoid first-paint image swap on mobile */
-const HERO_POSTER_SRC = "/media/hero-poster.jpg";
-
 export function ScrollHeroVideo() {
   const prefersReducedMotion = useSyncExternalStore(
     subscribeReducedMotion,
@@ -68,18 +39,12 @@ export function ScrollHeroVideo() {
     getServerSnapshot
   );
 
-  const [posterSrc, setPosterSrc] = useState<string | undefined>(HERO_POSTER_SRC);
-
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const durationRef = useRef(0);
+  const frameImgRef = useRef<HTMLImageElement>(null);
   const scrollProgressRef = useRef(0);
   const rafRef = useRef(0);
-  const videoPrimedRef = useRef(false);
-  const lastSafariSeekNudgeRef = useRef(0);
-  const safariNudgeBusyRef = useRef(false);
-  const lastSeekAtRef = useRef(0);
-  const lastAppliedTimeRef = useRef(0);
+  const lastFrameIndexRef = useRef(-1);
+  const preloadedRef = useRef<HTMLImageElement[]>([]);
 
   const scrimRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -124,181 +89,57 @@ export function ScrollHeroVideo() {
     [prefersReducedMotion]
   );
 
+  const showFrame = useCallback((index: number) => {
+    const img = frameImgRef.current;
+    if (!img) return;
+    const clamped = Math.max(0, Math.min(HERO_FRAME_COUNT - 1, index));
+    if (clamped === lastFrameIndexRef.current) return;
+    lastFrameIndexRef.current = clamped;
+
+    const cached = preloadedRef.current[clamped];
+    if (cached?.complete && cached.naturalWidth > 0) {
+      img.src = cached.src;
+      return;
+    }
+    img.src = HERO_FRAME_SRC(clamped);
+  }, []);
+
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const syncDuration = () => {
-      const d = video.duration;
-      if (Number.isFinite(d) && d > 0) {
-        durationRef.current = d;
-      }
-    };
-
-    const primePlayback = async () => {
-      if (videoPrimedRef.current || prefersReducedMotion) return;
-      video.muted = true;
-      try {
-        await video.play();
-        video.pause();
-        video.currentTime = 0;
-        videoPrimedRef.current = true;
-      } catch {
-        /* Autoplay / decode policies (esp. mobile): still allow scroll scrub */
-        videoPrimedRef.current = true;
-      }
-    };
-
-    const onLoadedData = () => {
-      syncDuration();
-      void primePlayback();
-    };
-
-    video.addEventListener("loadedmetadata", syncDuration);
-    video.addEventListener("durationchange", syncDuration);
-    video.addEventListener("loadeddata", onLoadedData);
-    video.addEventListener("canplay", syncDuration);
-    video.addEventListener("canplaythrough", onLoadedData);
-
+    const images: HTMLImageElement[] = [];
+    for (let i = 0; i < HERO_FRAME_COUNT; i++) {
+      const image = new Image();
+      image.decoding = "async";
+      image.src = HERO_FRAME_SRC(i);
+      images.push(image);
+    }
+    preloadedRef.current = images;
     return () => {
-      video.removeEventListener("loadedmetadata", syncDuration);
-      video.removeEventListener("durationchange", syncDuration);
-      video.removeEventListener("loadeddata", onLoadedData);
-      video.removeEventListener("canplay", syncDuration);
-      video.removeEventListener("canplaythrough", onLoadedData);
+      preloadedRef.current = [];
     };
-  }, [prefersReducedMotion]);
-
-  /** Drop poster once the video has committed a seek so it can't mask scrubbed frames (esp. iOS) */
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || prefersReducedMotion) return;
-    let done = false;
-    const clearPoster = () => {
-      if (done) return;
-      done = true;
-      setPosterSrc(undefined);
-    };
-    video.addEventListener("seeked", clearPoster);
-    const t = window.setTimeout(clearPoster, 2800);
-    return () => {
-      video.removeEventListener("seeked", clearPoster);
-      window.clearTimeout(t);
-    };
-  }, [prefersReducedMotion]);
+  }, []);
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
     if (prefersReducedMotion) {
-      video.loop = true;
-      video.muted = true;
-      video.play().catch(() => {});
+      showFrame(HERO_FRAME_COUNT - 1);
       applyOverlayStyles(0);
       return;
     }
 
-    video.muted = true;
-    video.pause();
-    const isMobile = isLikelyMobileDevice();
-    const seekIntervalMs = isMobile
-      ? MOBILE_SEEK_INTERVAL_MS
-      : DESKTOP_SEEK_INTERVAL_MS;
-    const frameQuant = isMobile ? MOBILE_FRAME_QUANT : DESKTOP_FRAME_QUANT;
-    const minDelta = isMobile ? 0.07 : 0.03;
-    const lerp = isMobile ? 0.24 : LERP;
-
-    const unlockOnScroll = () => {
-      if (videoPrimedRef.current) return;
-      void video
-        .play()
-        .then(() => {
-          video.pause();
-          video.currentTime =
-            scrollProgressRef.current * (durationRef.current || 0);
-          videoPrimedRef.current = true;
-        })
-        .catch(() => {});
-    };
+    showFrame(0);
 
     const tick = () => {
-      const now = performance.now();
       updateScrollProgress();
       const p = scrollProgressRef.current;
       applyOverlayStyles(p);
-
-      const dur = durationRef.current;
-      if (Number.isFinite(dur) && dur > 0) {
-        let target = p * dur;
-        if (p < 0.002 && dur > FIRST_FRAME_MIN_T * 2) {
-          target = Math.min(FIRST_FRAME_MIN_T, dur * 0.04);
-        }
-        target = Math.round(target / frameQuant) * frameQuant;
-        const cur = video.currentTime;
-        if (!Number.isNaN(cur)) {
-          const delta = target - cur;
-          const sinceLastSeek = now - lastSeekAtRef.current;
-          if (
-            sinceLastSeek < seekIntervalMs &&
-            Math.abs(target - lastAppliedTimeRef.current) < minDelta * 2
-          ) {
-            rafRef.current = requestAnimationFrame(tick);
-            return;
-          }
-          try {
-            if (Math.abs(delta) > SNAP_THRESHOLD) {
-              if ("fastSeek" in video && typeof video.fastSeek === "function") {
-                video.fastSeek(target);
-              } else {
-                video.currentTime = target;
-              }
-            } else if (Math.abs(delta) > minDelta) {
-              video.currentTime = cur + delta * lerp;
-            } else {
-              video.currentTime = target;
-            }
-            lastSeekAtRef.current = now;
-            lastAppliedTimeRef.current = target;
-
-            /* Safari: repaint video after programmatic seek while paused */
-            if (
-              isSafariHTMLVideoSeekQuirk() &&
-              Math.abs(delta) > minDelta &&
-              !safariNudgeBusyRef.current
-            ) {
-              if (now - lastSafariSeekNudgeRef.current > 180) {
-                lastSafariSeekNudgeRef.current = now;
-                safariNudgeBusyRef.current = true;
-                void video
-                  .play()
-                  .then(() => {
-                    video.pause();
-                  })
-                  .catch(() => {})
-                  .finally(() => {
-                    safariNudgeBusyRef.current = false;
-                  });
-              }
-            }
-          } catch {
-            /* seek before buffer ready — next frames will retry */
-          }
-        }
-      }
-
+      showFrame(Math.round(p * (HERO_FRAME_COUNT - 1)));
       rafRef.current = requestAnimationFrame(tick);
     };
 
     const onScroll = () => {
-      unlockOnScroll();
       updateScrollProgress();
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("wheel", unlockOnScroll, { passive: true });
-    window.addEventListener("touchstart", unlockOnScroll, { passive: true });
-    window.addEventListener("pointerdown", unlockOnScroll, { passive: true });
     window.addEventListener("resize", onScroll, { passive: true });
     updateScrollProgress();
     applyOverlayStyles(scrollProgressRef.current);
@@ -306,13 +147,10 @@ export function ScrollHeroVideo() {
 
     return () => {
       window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("wheel", unlockOnScroll);
-      window.removeEventListener("touchstart", unlockOnScroll);
-      window.removeEventListener("pointerdown", unlockOnScroll);
       window.removeEventListener("resize", onScroll);
       cancelAnimationFrame(rafRef.current);
     };
-  }, [prefersReducedMotion, updateScrollProgress, applyOverlayStyles]);
+  }, [prefersReducedMotion, updateScrollProgress, applyOverlayStyles, showFrame]);
 
   const heroHeight = prefersReducedMotion
     ? `${HERO_BAND_DVH}dvh`
@@ -329,7 +167,6 @@ export function ScrollHeroVideo() {
         className="sticky top-0 flex w-full items-center justify-center overflow-hidden bg-[#0A0A0C]"
         style={{ height: `${HERO_BAND_DVH}dvh`, minHeight: `${HERO_BAND_DVH}dvh` }}
       >
-        {/* True 16:9 frame, full frame visible (letterboxing only inside this band if needed) */}
         <div
           className="relative mx-auto w-full max-w-none shrink-0 px-0"
           style={{
@@ -337,20 +174,18 @@ export function ScrollHeroVideo() {
             width: `min(100vw, calc(${HERO_BAND_DVH}dvh * 16 / 9))`,
           }}
         >
-          <video
-            ref={videoRef}
+          {/* eslint-disable-next-line @next/next/no-img-element -- scroll-scrubbed WebP frame sequence */}
+          <img
+            ref={frameImgRef}
             className="absolute inset-0 h-full w-full object-contain [-webkit-transform:translateZ(0)]"
-            src="/media/hero.mp4"
-            poster={posterSrc}
-            muted
-            playsInline
-            preload="auto"
-            disableRemotePlayback
+            src={HERO_FRAME_SRC(0)}
+            alt=""
+            decoding="async"
+            fetchPriority="high"
             aria-hidden
           />
         </div>
 
-        {/* Darkening + headline only after scroll nears end */}
         <div
           ref={scrimRef}
           className="pointer-events-none absolute inset-0 bg-[#0A0A0C]/80 opacity-0 transition-opacity duration-100"
@@ -378,7 +213,6 @@ export function ScrollHeroVideo() {
           </div>
         </div>
 
-        {/* Scroll cue — bottom of first screen, brand orange */}
         <div
           className="pointer-events-none absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1 text-[#E67A2E] sm:bottom-6"
           aria-hidden
